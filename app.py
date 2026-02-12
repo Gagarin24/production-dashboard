@@ -9,7 +9,6 @@ import os
 
 st.set_page_config(page_title="Производственный дашборд", page_icon="🏭", layout="wide")
 
-# Инициализация БД
 @st.cache_resource
 def init_db():
     db_url = os.getenv('DATABASE_URL') or st.secrets.get("database", {}).get("url")
@@ -96,7 +95,7 @@ page = st.sidebar.radio("Выберите раздел:", [
     "💰 Расходы", "📈 Аналитика", "⚙️ Настройки"
 ])
 
-# ===== СТРАНИЦА: ОБЗОР =====
+# ========== СТРАНИЦА: ОБЗОР ==========
 if page == "📊 Обзор":
     st.header("📊 Общий обзор")
     
@@ -112,19 +111,22 @@ if page == "📊 Обзор":
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.metric("📦 Позиций на складе", len(products_df))
+        st.metric("Позиций на складе", len(products_df))
     
     with col2:
-        total_value = (products_df['current_stock'] * products_df['avg_cost']).sum()
-        st.metric("💰 Стоимость запасов", f"{total_value:,.2f} ₽")
+        if not products_df.empty:
+            total_value = (products_df['current_stock'] * products_df['avg_cost']).sum()
+            st.metric("Стоимость запасов", f"{total_value:,.2f} ₽")
+        else:
+            st.metric("Стоимость запасов", "0 ₽")
     
     with col3:
         total_expenses = expenses_month['amount'].sum() if not expenses_month.empty else 0
-        st.metric("💸 Расходы (месяц)", f"{total_expenses:,.2f} ₽")
+        st.metric("Расходы за месяц", f"{total_expenses:,.2f} ₽")
     
     with col4:
         production_count = len(production_month)
-        st.metric("🏭 Операций (месяц)", production_count)
+        st.metric("Производств за месяц", production_count)
     
     st.markdown("---")
     
@@ -133,439 +135,406 @@ if page == "📊 Обзор":
     with col1:
         st.subheader("📦 Текущие запасы")
         if not products_df.empty:
-            display_df = products_df[['name', 'current_stock', 'unit_short', 'avg_cost']].copy()
-            display_df['Стоимость'] = display_df['current_stock'] * display_df['avg_cost']
-            display_df = display_df.rename(columns={
-                'name': 'Продукт',
-                'current_stock': 'Остаток',
-                'unit_short': 'Ед.',
-                'avg_cost': 'Цена',
-                'Стоимость': 'Всего ₽'
-            })
-            st.dataframe(display_df, use_container_width=True, hide_index=True)
+            stock_data = products_df[['name', 'current_stock', 'unit_name', 'category_name']].copy()
+            stock_data = stock_data[stock_data['current_stock'] > 0]
+            if not stock_data.empty:
+                st.dataframe(stock_data, hide_index=True, use_container_width=True)
+            else:
+                st.info("Склад пуст")
         else:
-            st.info("📭 Нет продуктов на складе")
+            st.info("Товары не добавлены")
     
     with col2:
         st.subheader("⚠️ Низкие остатки")
-        low_stock = products_df[products_df['current_stock'] < products_df['min_stock']]
-        if not low_stock.empty:
-            display_low = low_stock[['name', 'current_stock', 'min_stock', 'unit_short']].rename(columns={
-                'name': 'Продукт',
-                'current_stock': 'Текущий',
-                'min_stock': 'Минимум',
-                'unit_short': 'Ед.'
-            })
-            st.dataframe(display_low, use_container_width=True, hide_index=True)
+        if not products_df.empty:
+            low_stock = products_df[products_df['current_stock'] <= products_df['min_stock']]
+            if not low_stock.empty:
+                st.dataframe(low_stock[['name', 'current_stock', 'min_stock', 'unit_name']], 
+                           hide_index=True, use_container_width=True)
+            else:
+                st.success("✅ Все товары в норме")
         else:
-            st.success("✅ Все запасы в норме")
+            st.info("Товары не добавлены")
     
     st.markdown("---")
     st.subheader("📋 Последние движения (неделя)")
+    
     if not movements_week.empty:
-        display_movements = movements_week[['movement_date', 'movement_type', 'product_name', 'quantity', 'unit_name', 'employee_name']].copy()
-        display_movements['movement_type'] = display_movements['movement_type'].map({'in': '➕ Приход', 'out': '➖ Расход'})
-        display_movements = display_movements.rename(columns={
-            'movement_date': 'Дата',
-            'movement_type': 'Тип',
-            'product_name': 'Продукт',
-            'quantity': 'Количество',
-            'unit_name': 'Ед.',
-            'employee_name': 'Сотрудник'
-        })
-        st.dataframe(display_movements, use_container_width=True, hide_index=True)
+        movements_display = movements_week[['movement_date', 'product_name', 'movement_type', 
+                                           'quantity', 'unit_name', 'employee_name']].head(10)
+        movements_display['movement_type'] = movements_display['movement_type'].map({'in': '➕ Приход', 'out': '➖ Расход'})
+        st.dataframe(movements_display, hide_index=True, use_container_width=True)
     else:
-        st.info("📭 Нет движений за последнюю неделю")
+        st.info("Движений за последнюю неделю нет")
 
-# ===== СТРАНИЦА: СКЛАД =====
+# ========== СТРАНИЦА: СКЛАД ==========
 elif page == "📦 Склад":
     st.header("📦 Управление складом")
     
-    tab1, tab2, tab3 = st.tabs(["📋 Остатки", "➕ Приход товара", "➖ Расход товара"])
+    tab1, tab2, tab3 = st.tabs(["📋 Остатки", "➕ Приход", "➖ Расход"])
     
     with tab1:
-        st.subheader("📋 Текущие остатки")
+        st.subheader("📋 Текущие остатки на складе")
         products_df = db.get_products(company_id)
         
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            categories = db.get_categories()
-            selected_category = st.selectbox("Фильтр по категории", ["Все"] + categories['name'].tolist())
-        with col2:
-            show_zero = st.checkbox("Показать нулевые остатки", value=True)
-        
         if not products_df.empty:
-            if selected_category != "Все":
-                products_df = products_df[products_df['category_name'] == selected_category]
+            col1, col2 = st.columns(2)
+            with col1:
+                categories = ['Все'] + products_df['category_name'].unique().tolist()
+                selected_category = st.selectbox("Фильтр по категории:", categories)
+            with col2:
+                show_zero = st.checkbox("Показать товары с нулевым остатком", value=True)
+            
+            filtered_df = products_df.copy()
+            if selected_category != 'Все':
+                filtered_df = filtered_df[filtered_df['category_name'] == selected_category]
             if not show_zero:
-                products_df = products_df[products_df['current_stock'] > 0]
+                filtered_df = filtered_df[filtered_df['current_stock'] > 0]
             
-            products_df['Стоимость'] = products_df['current_stock'] * products_df['avg_cost']
-            display_df = products_df[['name', 'category_name', 'current_stock', 'unit_short', 'avg_cost', 'Стоимость']].rename(columns={
-                'name': 'Продукт',
-                'category_name': 'Категория',
-                'current_stock': 'Остаток',
-                'unit_short': 'Ед.',
-                'avg_cost': 'Себест. ₽',
-                'Стоимость': 'Всего ₽'
-            })
-            st.dataframe(display_df, use_container_width=True, hide_index=True)
+            filtered_df['stock_value'] = filtered_df['current_stock'] * filtered_df['avg_cost']
+            st.dataframe(filtered_df[['name', 'category_name', 'current_stock', 'unit_name', 
+                       'avg_cost', 'stock_value', 'min_stock']], hide_index=True, use_container_width=True)
             
-            total_value = products_df['Стоимость'].sum()
-            st.metric("💰 Общая стоимость запасов", f"{total_value:,.2f} ₽")
+            total_value = filtered_df['stock_value'].sum()
+            st.markdown(f"**Общая стоимость запасов:** {total_value:,.2f} ₽")
         else:
-            st.info("📭 Нет продуктов на складе. Добавьте их в разделе 'Настройки'.")
+            st.info("Товары не добавлены. Перейдите в раздел 'Настройки'.")
     
     with tab2:
-        st.subheader("➕ Приход товара на склад")
+        st.subheader("➕ Оприходование товара")
         products_df = db.get_products(company_id)
         employees_df = db.get_employees(company_id)
         
         if products_df.empty:
-            st.warning("⚠️ Сначала добавьте продукты в разделе 'Настройки → Продукты'")
+            st.warning("⚠️ Сначала добавьте продукты в разделе 'Настройки'")
         else:
-            with st.form("stock_in_form"):
+            with st.form("income_form"):
                 col1, col2 = st.columns(2)
+                
                 with col1:
-                    product_id = st.selectbox("Продукт*", products_df['id'], 
-                                            format_func=lambda x: products_df[products_df['id']==x]['name'].values[0])
-                    quantity = st.number_input("Количество*", min_value=0.01, value=1.0, step=0.1)
-                    price = st.number_input("Цена за единицу ₽*", min_value=0.0, value=0.0, step=10.0)
+                    product_id = st.selectbox("Выберите продукт*", options=products_df['id'].tolist(),
+                        format_func=lambda x: f"{products_df[products_df['id']==x]['name'].values[0]} ({products_df[products_df['id']==x]['unit_name'].values[0]})")
+                    quantity = st.number_input("Количество*", min_value=0.0, value=1.0, step=0.1)
+                    price_per_unit = st.number_input("Цена за единицу (₽)*", min_value=0.0, value=0.0, step=0.01)
                 
                 with col2:
-                    movement_date = st.date_input("Дата прихода", value=datetime.now().date())
-                    employee_id = st.selectbox("Сотрудник", [None] + employees_df['id'].tolist(),
-                                              format_func=lambda x: "Не указан" if x is None else employees_df[employees_df['id']==x]['name'].values[0])
-                    notes = st.text_area("Примечание", placeholder="Опционально")
+                    movement_date = st.date_input("Дата прихода", value=datetime.now())
+                    if not employees_df.empty:
+                        employee_id = st.selectbox("Ответственный сотрудник",
+                            options=[None] + employees_df['id'].tolist(),
+                            format_func=lambda x: "Не указан" if x is None else employees_df[employees_df['id']==x]['name'].values[0])
+                    else:
+                        employee_id = None
+                        st.info("Сотрудники не добавлены")
+                    notes = st.text_area("Примечание", placeholder="Например: Закупка у поставщика")
                 
-                submit = st.form_submit_button("➕ Добавить приход", use_container_width=True)
+                total_cost = quantity * price_per_unit
+                st.markdown(f"**Итоговая стоимость:** {total_cost:.2f} ₽")
                 
-                if submit:
-                    if quantity <= 0:
-                        st.error("⚠️ Количество должно быть больше нуля!")
+                submitted = st.form_submit_button("💾 Оприходовать", use_container_width=True)
+                
+                if submitted:
+                    if price_per_unit <= 0:
+                        st.error("Укажите цену за единицу")
+                    elif quantity <= 0:
+                        st.error("Укажите количество")
                     else:
                         movement_data = {
-                            'product_id': product_id,
-                            'movement_type': 'in',
-                            'quantity': quantity,
-                            'price_per_unit': price,
-                            'total_cost': quantity * price,
-                            'employee_id': employee_id,
-                            'notes': notes,
-                            'movement_date': movement_date
+                            'product_id': product_id, 'movement_type': 'in', 'quantity': quantity,
+                            'price_per_unit': price_per_unit, 'total_cost': total_cost,
+                            'employee_id': employee_id, 'notes': notes,
+                            'movement_date': movement_date.strftime('%Y-%m-%d')
                         }
                         db.add_stock_movement(company_id, movement_data)
-                        st.success("✅ Приход товара зафиксирован!")
-                        time.sleep(1)
+                        st.success(f"✅ Товар успешно оприходован!")
                         st.rerun()
     
     with tab3:
-        st.subheader("➖ Расход товара со склада")
+        st.subheader("➖ Списание товара")
         products_df = db.get_products(company_id)
         employees_df = db.get_employees(company_id)
+        products_with_stock = products_df[products_df['current_stock'] > 0]
         
-        if products_df.empty:
-            st.warning("⚠️ Нет продуктов на складе")
+        if products_with_stock.empty:
+            st.warning("⚠️ Нет товаров для списания")
         else:
-            available_products = products_df[products_df['current_stock'] > 0]
-            if available_products.empty:
-                st.warning("⚠️ Нет товаров с ненулевым остатком")
-            else:
-                with st.form("stock_out_form"):
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        product_id = st.selectbox("Продукт*", available_products['id'],
-                                                format_func=lambda x: f"{available_products[available_products['id']==x]['name'].values[0]} (остаток: {available_products[available_products['id']==x]['current_stock'].values[0]} {available_products[available_products['id']==x]['unit_short'].values[0]})")
-                        selected_product = available_products[available_products['id']==product_id].iloc[0]
-                        max_quantity = selected_product['current_stock']
-                        quantity = st.number_input(f"Количество* (макс: {max_quantity})", min_value=0.01, max_value=float(max_quantity), value=min(1.0, float(max_quantity)), step=0.1)
-                    
-                    with col2:
-                        movement_date = st.date_input("Дата расхода", value=datetime.now().date())
-                        employee_id = st.selectbox("Сотрудник", [None] + employees_df['id'].tolist(),
-                                                  format_func=lambda x: "Не указан" if x is None else employees_df[employees_df['id']==x]['name'].values[0])
-                        notes = st.text_area("Причина расхода", placeholder="Например: продажа, списание, брак")
-                    
-                    submit = st.form_submit_button("➖ Списать товар", use_container_width=True)
-                    
-                    if submit:
-                        if quantity > max_quantity:
-                            st.error(f"⚠️ Недостаточно товара на складе! Доступно: {max_quantity}")
-                        else:
-                            movement_data = {
-                                'product_id': product_id,
-                                'movement_type': 'out',
-                                'quantity': quantity,
-                                'price_per_unit': 0,
-                                'total_cost': 0,
-                                'employee_id': employee_id,
-                                'notes': notes,
-                                'movement_date': movement_date
-                            }
-                            db.add_stock_movement(company_id, movement_data)
-                            st.success("✅ Расход товара зафиксирован!")
-                            time.sleep(1)
-                            st.rerun()
+            product_id = st.selectbox("Выберите продукт для списания*",
+                options=products_with_stock['id'].tolist(),
+                format_func=lambda x: f"{products_with_stock[products_with_stock['id']==x]['name'].values[0]} (остаток: {products_with_stock[products_with_stock['id']==x]['current_stock'].values[0]:.2f} {products_with_stock[products_with_stock['id']==x]['unit_name'].values[0]})",
+                key="outcome_product_select")
+            
+            selected_product = products_with_stock[products_with_stock['id']==product_id].iloc[0]
+            max_quantity = selected_product['current_stock']
+            st.info(f"📦 Доступно на складе: **{max_quantity:.2f} {selected_product['unit_name']}**")
+            
+            with st.form("outcome_form"):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    quantity = st.number_input(f"Количество для списания*", min_value=0.0,
+                        value=min(1.0, float(max_quantity)), step=0.1, help=f"Максимум: {max_quantity:.2f}")
+                    movement_date = st.date_input("Дата списания", value=datetime.now(), key="outcome_date")
+                
+                with col2:
+                    if not employees_df.empty:
+                        employee_id = st.selectbox("Ответственный сотрудник",
+                            options=[None] + employees_df['id'].tolist(),
+                            format_func=lambda x: "Не указан" if x is None else employees_df[employees_df['id']==x]['name'].values[0],
+                            key="outcome_employee")
+                    else:
+                        employee_id = None
+                    notes = st.text_area("Примечание", placeholder="Например: Продажа, списание брака", key="outcome_notes")
+                
+                submitted = st.form_submit_button("➖ Списать", use_container_width=True)
+                
+                if submitted:
+                    if quantity <= 0:
+                        st.error("Укажите количество больше 0")
+                    elif quantity > max_quantity:
+                        st.error(f"❌ Недостаточно товара! Доступно: {max_quantity:.2f}")
+                    else:
+                        movement_data = {
+                            'product_id': product_id, 'movement_type': 'out', 'quantity': quantity,
+                            'employee_id': employee_id, 'notes': notes,
+                            'movement_date': movement_date.strftime('%Y-%m-%d')
+                        }
+                        db.add_stock_movement(company_id, movement_data)
+                        st.success(f"✅ Товар списан! Осталось: {max_quantity - quantity:.2f}")
+                        st.rerun()
 
-# ===== СТРАНИЦА: ПРОИЗВОДСТВО =====
+# ========== СТРАНИЦА: ПРОИЗВОДСТВО ==========
 elif page == "🏭 Производство":
-    st.header("🏭 Управление производством")
+    st.header("🏭 Производственный учет")
     
     tab1, tab2 = st.tabs(["➕ Новая операция", "📋 История производства"])
     
     with tab1:
-        st.subheader("➕ Создать производственную операцию")
+        st.subheader("➕ Добавить производственную операцию")
         products_df = db.get_products(company_id)
         employees_df = db.get_employees(company_id)
         
-        if products_df.empty:
-            st.warning("⚠️ Сначала добавьте продукты")
+        if products_df.empty or employees_df.empty:
+            st.warning("⚠️ Сначала добавьте продукты и сотрудников")
         else:
+            col1, col2 = st.columns(2)
+            with col1:
+                operation_name = st.text_input("Название операции*", placeholder="Распиловка бревен")
+                production_date = st.date_input("Дата производства", value=datetime.now())
+            with col2:
+                employee_id = st.selectbox("Сотрудник*", options=employees_df['id'].tolist(),
+                    format_func=lambda x: employees_df[employees_df['id']==x]['name'].values[0])
+                additional_costs = st.number_input("Дополнительные расходы (₽)", min_value=0.0, value=0.0, step=10.0)
+            
+            st.markdown("---")
+            st.markdown("#### 📦 Использованные материалы")
+            
             if 'materials_count' not in st.session_state:
                 st.session_state.materials_count = 1
             
-            with st.form("production_form"):
-                col1, col2 = st.columns(2)
+            materials_used = []
+            materials_valid = True
+            
+            for i in range(st.session_state.materials_count):
+                st.markdown(f"**Материал {i+1}:**")
+                col1, col2, col3 = st.columns([3, 2, 1])
+                
                 with col1:
-                    operation_name = st.text_input("Название операции*", placeholder="Производство досок")
-                    operation_date = st.date_input("Дата операции", value=datetime.now().date())
-                    employee_id = st.selectbox("Ответственный сотрудник", [None] + employees_df['id'].tolist(),
-                                              format_func=lambda x: "Не указан" if x is None else employees_df[employees_df['id']==x]['name'].values[0])
+                    material_id = st.selectbox(f"Продукт", options=products_df['id'].tolist(),
+                        format_func=lambda x: f"{products_df[products_df['id']==x]['name'].values[0]} (остаток: {products_df[products_df['id']==x]['current_stock'].values[0]:.2f})",
+                        key=f"material_id_{i}")
                 
                 with col2:
-                    additional_costs = st.number_input("Дополнительные расходы ₽", min_value=0.0, value=0.0, step=100.0,
-                                                      help="Электричество, амортизация и т.д.")
-                
-                st.markdown("---")
-                st.subheader("📦 Использованные материалы")
-                
-                materials_data = []
-                total_material_cost = 0
-                
-                available_materials = products_df[products_df['current_stock'] > 0]
-                if available_materials.empty:
-                    st.warning("⚠️ Нет материалов с ненулевым остатком")
-                else:
-                    for i in range(st.session_state.materials_count):
-                        st.markdown(f"**Материал #{i+1}**")
-                        col1, col2, col3 = st.columns([2, 1, 1])
-                        with col1:
-                            mat_id = st.selectbox(f"Продукт", available_materials['id'], key=f"mat_{i}",
-                                                format_func=lambda x: f"{available_materials[available_materials['id']==x]['name'].values[0]} ({available_materials[available_materials['id']==x]['current_stock'].values[0]} {available_materials[available_materials['id']==x]['unit_short'].values[0]})")
-                        with col2:
-                            mat_product = available_materials[available_materials['id']==mat_id].iloc[0]
-                            max_qty = mat_product['current_stock']
-                            mat_qty = st.number_input(f"Количество (макс: {max_qty})", min_value=0.01, max_value=float(max_qty), value=min(1.0, float(max_qty)), step=0.1, key=f"qty_{i}")
-                        with col3:
-                            mat_cost = st.number_input("Цена ₽/ед", value=float(mat_product['avg_cost']), step=10.0, key=f"cost_{i}")
-                        
-                        materials_data.append({'product_id': mat_id, 'quantity_used': mat_qty, 'cost_per_unit': mat_cost})
-                        total_material_cost += mat_qty * mat_cost
-                        st.markdown("---")
-                
-                st.markdown("---")
-                st.subheader("✅ Произведённая продукция")
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    output_product_id = st.selectbox("Готовая продукция*", products_df['id'],
-                                                    format_func=lambda x: products_df[products_df['id']==x]['name'].values[0])
-                with col2:
-                    output_quantity = st.number_input("Количество произведённого*", min_value=0.01, value=1.0, step=0.1)
-                
-                total_cost = total_material_cost + additional_costs
-                cost_per_unit = total_cost / output_quantity if output_quantity > 0 else 0
-                
-                st.info(f"""
-                **💰 Расчёт себестоимости:**
-                - Материалы: {total_material_cost:.2f} ₽
-                - Доп. расходы: {additional_costs:.2f} ₽
-                - **Итого:** {total_cost:.2f} ₽
-                - **Себестоимость единицы:** {cost_per_unit:.2f} ₽
-                """)
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    submit = st.form_submit_button("✅ Создать операцию", use_container_width=True)
-                with col2:
-                    if st.form_submit_button("➕ Добавить материал"):
-                        st.session_state.materials_count += 1
-                        st.rerun()
-                
-                if submit:
-                    if not operation_name:
-                        st.error("⚠️ Укажите название операции!")
-                    elif not materials_data:
-                        st.error("⚠️ Добавьте хотя бы один материал!")
-                    elif output_quantity <= 0:
-                        st.error("⚠️ Количество произведённого должно быть больше нуля!")
+                    selected_material = products_df[products_df['id']==material_id].iloc[0]
+                    max_qty = selected_material['current_stock']
+                    
+                    if max_qty <= 0:
+                        st.error(f"Нет в наличии")
+                        materials_valid = False
+                        material_qty = 0
                     else:
-                        production_data = {
-                            'operation_name': operation_name,
-                            'output_product_id': output_product_id,
-                            'output_quantity': output_quantity,
-                            'output_cost': total_cost,
-                            'additional_costs': additional_costs,
-                            'employee_id': employee_id,
-                            'operation_date': operation_date
-                        }
-                        
-                        try:
-                            db.add_production_operation(company_id, production_data, materials_data)
-                            st.success("🎉 **ПРОИЗВОДСТВЕННАЯ ОПЕРАЦИЯ УСПЕШНО СОЗДАНА!**")
-                            st.balloons()
-                            output_unit = products_df[products_df['id']==output_product_id]['unit_short'].values[0]
-                            st.info(f"""
-                            **📋 Детали операции:**
-                            - Операция: {operation_name}
-                            - Произведено: {output_quantity:.2f} {output_unit}
-                            - Себестоимость: {cost_per_unit:.2f} ₽/ед
-                            - Общие затраты: {total_cost:.2f} ₽
-                            """)
-                            st.session_state.materials_count = 1
-                            time.sleep(2)
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"❌ Ошибка: {str(e)}")
+                        material_qty = st.number_input(f"Количество (макс: {max_qty:.2f})",
+                            min_value=0.0, max_value=float(max_qty), value=min(1.0, float(max_qty)), step=0.1, key=f"material_qty_{i}")
+                
+                with col3:
+                    st.markdown("&nbsp;")
+                    st.markdown(f"*{selected_material['unit_name']}*")
+                
+                material_cost = material_qty * selected_material['avg_cost']
+                st.caption(f"Стоимость материала: {material_cost:.2f} ₽")
+                materials_used.append({'product_id': material_id, 'quantity_used': material_qty, 'cost': material_cost})
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("➕ Добавить еще материал"):
+                    st.session_state.materials_count += 1
+                    st.rerun()
+            with col2:
+                if st.session_state.materials_count > 1:
+                    if st.button("➖ Удалить последний"):
+                        st.session_state.materials_count -= 1
+                        st.rerun()
+            
+            st.markdown("---")
+            st.markdown("#### 📤 Результат производства")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                output_product_id = st.selectbox("Готовая продукция*", options=products_df['id'].tolist(),
+                    format_func=lambda x: f"{products_df[products_df['id']==x]['name'].values[0]} ({products_df[products_df['id']==x]['unit_name'].values[0]})")
+            with col2:
+                output_quantity = st.number_input("Количество произведено*", min_value=0.0, value=1.0, step=0.1)
+            
+            notes = st.text_area("Примечание")
+            
+            total_materials_cost = sum([m['cost'] for m in materials_used])
+            total_cost = total_materials_cost + additional_costs
+            cost_per_unit = total_cost / output_quantity if output_quantity > 0 else 0
+            
+            st.markdown("---")
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Материалы", f"{total_materials_cost:.2f} ₽")
+            with col2:
+                st.metric("Доп. расходы", f"{additional_costs:.2f} ₽")
+            with col3:
+                st.metric("Итого", f"{total_cost:.2f} ₽")
+            with col4:
+                st.metric("Себестоимость/ед", f"{cost_per_unit:.2f} ₽")
+            
+            if st.button("🏭 Создать производственную операцию", use_container_width=True, type="primary"):
+                if not operation_name:
+                    st.error("Укажите название операции")
+                elif not materials_valid:
+                    st.error("Недостаточно материалов на складе")
+                elif output_quantity <= 0:
+                    st.error("Укажите количество произведенной продукции")
+                else:
+                    production_data = {
+                        'operation_name': operation_name, 'employee_id': employee_id,
+                        'output_product_id': output_product_id, 'output_quantity': output_quantity,
+                        'output_cost': additional_costs, 'production_date': production_date.strftime('%Y-%m-%d'),
+                        'notes': notes
+                    }
+                    try:
+                        db.add_production_operation(company_id, production_data, materials_used)
+                        st.success("🎉 **ПРОИЗВОДСТВЕННАЯ ОПЕРАЦИЯ УСПЕШНО СОЗДАНА!**")
+                        st.balloons()
+                        output_unit = products_df[products_df['id']==output_product_id]['unit_name'].values[0]
+                        st.info(f"**Произведено:** {output_quantity:.2f} {output_unit}, **Себестоимость:** {cost_per_unit:.2f} ₽/ед")
+                        st.session_state.materials_count = 1
+                        time.sleep(2)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Ошибка: {str(e)}")
     
     with tab2:
         st.subheader("📋 История производственных операций")
-        
         col1, col2 = st.columns(2)
         with col1:
-            start_date = st.date_input("От", value=datetime.now().date() - timedelta(days=30))
+            start_date = st.date_input("С даты", value=datetime.now().date() - timedelta(days=30), key="prod_start")
         with col2:
-            end_date = st.date_input("До", value=datetime.now().date())
+            end_date = st.date_input("По дату", value=datetime.now().date(), key="prod_end")
         
-        operations_df = db.get_production_operations(company_id, start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'))
+        production_df = db.get_production_operations(company_id, start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'))
         
-        if not operations_df.empty:
-            operations_df['cost_per_unit'] = operations_df['output_cost'] / operations_df['output_quantity']
+        if not production_df.empty:
+            production_df['cost_per_unit'] = production_df['output_cost'] / production_df['output_quantity']
             
-            for idx, row in operations_df.iterrows():
-                col1, col2, col3, col4 = st.columns([2, 2, 2, 1])
+            for idx, row in production_df.iterrows():
+                col1, col2, col3, col4, col5 = st.columns([2, 2, 2, 2, 1])
                 with col1:
-                    st.write(f"**📅 {row['operation_date']}**")
-                    st.write(f"🏭 {row['operation_name']}")
+                    st.markdown(f"**{row['production_date']}**")
+                    st.caption(f"{row['operation_name']}")
                 with col2:
-                    st.write(f"**👤 Сотрудник:**")
-                    st.write(row['employee_name'] if row['employee_name'] else "Не указан")
+                    st.text(f"👷 {row['employee_name']}")
                 with col3:
-                    st.write(f"**📦 Продукт:**")
-                    st.write(f"{row['output_product_name']} ({row['output_quantity']:.2f} {row['output_unit']})")
+                    st.text(f"📦 {row['output_product_name']}")
+                    st.caption(f"{row['output_quantity']:.2f} {row['output_unit']}")
                 with col4:
-                    st.write(f"**💰 Затраты:**")
-                    st.write(f"{row['output_cost']:.2f} ₽")
-                    st.write(f"({row['cost_per_unit']:.2f} ₽/ед)")
-                
-                if st.button(f"🗑️ Удалить", key=f"del_{row['id']}"):
-                    result = db.delete_production_operation(row['id'])
-                    if result["success"]:
-                        st.success("✅ Операция удалена!")
-                        st.info(f"♻️ Материалов возвращено: {result['materials_returned']}, готовой продукции списано: {result['output_removed']:.2f} {row['output_unit']}")
-                        time.sleep(1)
-                        st.rerun()
-                    else:
-                        st.error(f"❌ {result['message']}")
-                
+                    st.text(f"💰 {row['output_cost']:.2f} ₽")
+                    st.caption(f"{row['cost_per_unit']:.2f} ₽/ед")
+                with col5:
+                    if st.button("🗑️", key=f"del_{row['id']}", help="Удалить"):
+                        result = db.delete_production_operation(row['id'])
+                        if result["success"]:
+                            st.success("✅ Операция удалена!")
+                            st.info(f"Материалов возвращено: {result['materials_returned']}, списано: {result['output_removed']:.2f}")
+                            time.sleep(2)
+                            st.rerun()
+                        else:
+                            st.error(result['message'])
                 st.markdown("---")
             
-            st.markdown("### 📊 Общая статистика")
             col1, col2, col3 = st.columns(3)
             with col1:
-                st.metric("Операций", len(operations_df))
+                st.metric("Всего операций", len(production_df))
             with col2:
-                st.metric("Произведено единиц", f"{operations_df['output_quantity'].sum():.2f}")
+                st.metric("Произведено единиц", f"{production_df['output_quantity'].sum():.2f}")
             with col3:
-                st.metric("Общие затраты", f"{operations_df['output_cost'].sum():,.2f} ₽")
+                st.metric("Общие расходы", f"{production_df['output_cost'].sum():.2f} ₽")
         else:
-            st.info("📭 Нет производственных операций за выбранный период")
+            st.info("Производственных операций за выбранный период нет")
 
-# ===== СТРАНИЦА: РАСХОДЫ =====
+# ========== СТРАНИЦА: РАСХОДЫ ==========
 elif page == "💰 Расходы":
-    st.header("💰 Управление расходами")
-    
+    st.header("💰 Учет расходов")
     tab1, tab2 = st.tabs(["➕ Добавить расход", "📋 История расходов"])
     
     with tab1:
-        st.subheader("➕ Добавить новый расход")
-        
         with st.form("expense_form"):
             col1, col2 = st.columns(2)
             with col1:
-                category = st.selectbox("Категория*", [
-                    "Зарплата", "Аренда", "Коммунальные услуги", "Транспорт",
-                    "Реклама", "Налоги", "Обслуживание оборудования", "Прочее"
-                ])
-                amount = st.number_input("Сумма ₽*", min_value=0.0, value=0.0, step=100.0)
-            
+                expense_category = st.selectbox("Категория расхода*",
+                    options=["Зарплаты", "Аренда", "Электроэнергия", "Транспорт", "Связь", "Ремонт", "Налоги", "Маркетинг", "Офис", "Другое"])
+                amount = st.number_input("Сумма (₽)*", min_value=0.0, value=0.0, step=10.0)
             with col2:
-                expense_date = st.date_input("Дата расхода", value=datetime.now().date())
-                description = st.text_area("Описание", placeholder="Детали расхода")
+                expense_date = st.date_input("Дата расхода", value=datetime.now())
+                description = st.text_area("Описание")
             
-            submit = st.form_submit_button("➕ Добавить расход", use_container_width=True)
-            
-            if submit:
+            if st.form_submit_button("💾 Добавить расход", use_container_width=True):
                 if amount <= 0:
-                    st.error("⚠️ Сумма должна быть больше нуля!")
+                    st.error("Укажите сумму расхода")
                 else:
-                    expense_data = {
-                        'category': category,
-                        'amount': amount,
-                        'description': description,
-                        'expense_date': expense_date
-                    }
+                    expense_data = {'category': expense_category, 'description': description,
+                                   'amount': amount, 'expense_date': expense_date.strftime('%Y-%m-%d')}
                     db.add_expense(company_id, expense_data)
                     st.success("✅ Расход добавлен!")
-                    time.sleep(1)
                     st.rerun()
     
     with tab2:
-        st.subheader("📋 История расходов")
-        
         col1, col2 = st.columns(2)
         with col1:
-            start_date = st.date_input("От", value=datetime.now().date() - timedelta(days=30), key="exp_start")
+            start_date = st.date_input("С даты", value=datetime.now().date() - timedelta(days=30), key="expense_start")
         with col2:
-            end_date = st.date_input("До", value=datetime.now().date(), key="exp_end")
+            end_date = st.date_input("По дату", value=datetime.now().date(), key="expense_end")
         
         expenses_df = db.get_expenses(company_id, start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'))
         
         if not expenses_df.empty:
-            display_df = expenses_df[['expense_date', 'category', 'amount', 'description']].rename(columns={
-                'expense_date': 'Дата',
-                'category': 'Категория',
-                'amount': 'Сумма ₽',
-                'description': 'Описание'
-            })
-            st.dataframe(display_df, use_container_width=True, hide_index=True)
+            st.dataframe(expenses_df[['expense_date', 'category', 'description', 'amount']],
+                        hide_index=True, use_container_width=True)
             
-            st.markdown("---")
-            st.subheader("📊 Расходы по категориям")
-            
-            category_totals = expenses_df.groupby('category')['amount'].sum().reset_index()
-            fig = px.pie(category_totals, values='amount', names='category', title='Структура расходов')
-            st.plotly_chart(fig, use_container_width=True)
-            
-            col1, col2, col3 = st.columns(3)
+            col1, col2 = st.columns(2)
             with col1:
-                st.metric("Общая сумма", f"{expenses_df['amount'].sum():,.2f} ₽")
+                category_expenses = expenses_df.groupby('category')['amount'].sum().reset_index()
+                fig = px.bar(category_expenses, x='amount', y='category', orientation='h',
+                           labels={'amount': 'Сумма (₽)', 'category': 'Категория'}, color='amount')
+                st.plotly_chart(fig, use_container_width=True)
             with col2:
+                st.metric("Всего расходов", f"{expenses_df['amount'].sum():,.2f} ₽")
                 st.metric("Средний расход", f"{expenses_df['amount'].mean():,.2f} ₽")
-            with col3:
                 st.metric("Максимальный расход", f"{expenses_df['amount'].max():,.2f} ₽")
         else:
-            st.info("📭 Нет расходов за выбранный период")
+            st.info("Расходов за выбранный период нет")
 
-# ===== СТРАНИЦА: АНАЛИТИКА =====
+# ========== СТРАНИЦА: АНАЛИТИКА ==========
 elif page == "📈 Аналитика":
-    st.header("📈 Аналитика и отчёты")
-    
+    st.header("📈 Аналитика и отчеты")
     col1, col2 = st.columns(2)
     with col1:
-        start_date = st.date_input("От", value=datetime.now().date() - timedelta(days=30), key="analytics_start")
+        start_date = st.date_input("Период с", value=datetime.now().date() - timedelta(days=30), key="analytics_start")
     with col2:
-        end_date = st.date_input("До", value=datetime.now().date(), key="analytics_end")
+        end_date = st.date_input("Период по", value=datetime.now().date(), key="analytics_end")
     
     movements_df = db.get_stock_movements(company_id, start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'))
     production_df = db.get_production_operations(company_id, start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'))
@@ -574,172 +543,111 @@ elif page == "📈 Аналитика":
     
     st.subheader("📊 Динамика движения товаров")
     if not movements_df.empty:
-        movements_by_date = movements_df.groupby(['movement_date', 'movement_type']).size().reset_index(name='quantity')
+        movements_by_date = movements_df.groupby(['movement_date', 'movement_type'])['quantity'].sum().reset_index()
         movements_by_date['Тип'] = movements_by_date['movement_type'].map({'in': '➕ Приход', 'out': '➖ Расход'})
-        
-        fig = px.line(movements_by_date, x='movement_date', y='quantity', color='Тип',
-                     labels={'movement_date': 'Дата', 'quantity': 'Количество операций'},
-                     color_discrete_map={'➕ Приход': '#00CC66', '➖ Расход': '#FF3333'},
-                     markers=True)
-        fig.update_layout(xaxis_title='Дата', yaxis_title='Количество операций', 
-                         legend_title='Тип движения', hovermode='x unified')
+        fig = px.line(movements_by_date, x='movement_date', y='quantity', color='Тип', markers=True)
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("📭 Нет данных о движении товаров за выбранный период")
+        st.info("Нет данных о движении товаров")
     
-    st.markdown("---")
-    st.subheader("🏭 Производительность по сотрудникам")
-    if not production_df.empty:
-        emp_stats = production_df.groupby('employee_name').agg({
-            'id': 'count',
-            'output_quantity': 'sum',
-            'output_cost': 'sum'
-        }).reset_index()
-        emp_stats.columns = ['Сотрудник', 'Операций', 'Произведено', 'Затраты ₽']
-        st.dataframe(emp_stats, use_container_width=True, hide_index=True)
-    else:
-        st.info("📭 Нет данных о производстве")
-    
-    st.markdown("---")
-    st.subheader("💰 Структура расходов")
-    if not expenses_df.empty:
-        category_totals = expenses_df.groupby('category')['amount'].sum().reset_index()
-        fig = px.pie(category_totals, values='amount', names='category', title='Расходы по категориям', hole=0.4)
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("📭 Нет данных о расходах")
-    
-    st.markdown("---")
-    st.subheader("📦 Маржа продукции")
-    if not products_df.empty:
-        margin_df = products_df[products_df['selling_price'] > 0].copy()
-        if not margin_df.empty:
-            margin_df['Маржа ₽'] = margin_df['selling_price'] - margin_df['avg_cost']
-            margin_df['Маржа %'] = (margin_df['Маржа ₽'] / margin_df['selling_price'] * 100).round(2)
-            display_margin = margin_df[['name', 'avg_cost', 'selling_price', 'Маржа ₽', 'Маржа %']].rename(columns={
-                'name': 'Продукт',
-                'avg_cost': 'Себестоимость ₽',
-                'selling_price': 'Цена продажи ₽'
-            })
-            st.dataframe(display_margin, use_container_width=True, hide_index=True)
-        else:
-            st.info("📭 Нет продуктов с указанной ценой продажи")
-    
-    st.markdown("---")
-    st.subheader("💼 Финансовая сводка")
-    
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
     with col1:
-        total_expenses = expenses_df['amount'].sum() if not expenses_df.empty else 0
-        st.metric("💸 Общие расходы", f"{total_expenses:,.2f} ₽")
+        st.subheader("🏭 Производительность")
+        if not production_df.empty:
+            employee_productivity = production_df.groupby('employee_name')['output_quantity'].sum().reset_index()
+            fig = px.bar(employee_productivity, x='output_quantity', y='employee_name', orientation='h')
+            st.plotly_chart(fig, use_container_width=True)
     with col2:
-        stock_value = (products_df['current_stock'] * products_df['avg_cost']).sum() if not products_df.empty else 0
-        st.metric("📦 Стоимость запасов", f"{stock_value:,.2f} ₽")
-    with col3:
-        production_costs = production_df['output_cost'].sum() if not production_df.empty else 0
-        st.metric("🏭 Производственные затраты", f"{production_costs:,.2f} ₽")
+        st.subheader("💰 Структура расходов")
+        if not expenses_df.empty:
+            expense_by_category = expenses_df.groupby('category')['amount'].sum().reset_index()
+            fig = px.pie(expense_by_category, values='amount', names='category')
+            st.plotly_chart(fig, use_container_width=True)
+    
+    st.subheader("💵 Рентабельность продукции")
+    if not products_df.empty:
+        products_with_margin = products_df[(products_df['avg_cost'] > 0) & (products_df['selling_price'] > 0)].copy()
+        if not products_with_margin.empty:
+            products_with_margin['margin'] = products_with_margin['selling_price'] - products_with_margin['avg_cost']
+            products_with_margin['margin_percent'] = (products_with_margin['margin'] / products_with_margin['selling_price'] * 100).round(2)
+            st.dataframe(products_with_margin[['name', 'avg_cost', 'selling_price', 'margin', 'margin_percent']],
+                        hide_index=True, use_container_width=True)
 
-# ===== СТРАНИЦА: НАСТРОЙКИ =====
+# ========== СТРАНИЦА: НАСТРОЙКИ ==========
 elif page == "⚙️ Настройки":
     st.header("⚙️ Настройки системы")
-    
-    tab1, tab2, tab3 = st.tabs(["📦 Продукты", "👥 Сотрудники", "📁 Категории"])
+    tab1, tab2, tab3 = st.tabs(["📦 Продукты", "👷 Сотрудники", "📋 Категории"])
     
     with tab1:
-        st.subheader("📦 Управление продуктами")
-        products_df = db.get_products(company_id)
-        
-        col1, col2 = st.columns([2, 1])
-        
+        col1, col2 = st.columns([3, 2])
         with col1:
-            st.markdown("**Список продуктов:**")
+            products_df = db.get_products(company_id)
             if not products_df.empty:
-                for _, product in products_df.iterrows():
-                    st.write(f"**{product['name']}** — {product['category_name']} ({product['unit_name']})")
-                    st.caption(f"Остаток: {product['current_stock']} {product['unit_short']}, Себест.: {product['avg_cost']:.2f} ₽")
+                for _, row in products_df.iterrows():
+                    col_name, col_info = st.columns([4, 1])
+                    with col_name:
+                        st.markdown(f"**{row['name']}** — {row['category_name']} ({row['unit_name']})")
+                        st.caption(f"Остаток: {row['current_stock']:.2f}, Цена: {row['selling_price']:.2f} ₽")
                     st.markdown("---")
             else:
-                st.info("📭 Нет продуктов")
+                st.info("Продукты не добавлены")
         
         with col2:
-            st.markdown("**Добавить продукт:**")
             with st.form("add_product_form"):
                 name = st.text_input("Название*")
-                categories = db.get_categories()
-                category_id = st.selectbox("Категория*", categories['id'], 
-                                          format_func=lambda x: categories[categories['id']==x]['name'].values[0])
-                units = db.get_units()
-                unit_id = st.selectbox("Единица измерения*", units['id'],
-                                      format_func=lambda x: f"{units[units['id']==x]['name'].values[0]} ({units[units['id']==x]['short_name'].values[0]})")
+                categories_df = db.get_categories()
+                category_id = st.selectbox("Категория*", options=categories_df['id'].tolist(),
+                    format_func=lambda x: categories_df[categories_df['id']==x]['name'].values[0])
+                units_df = db.get_units()
+                unit_id = st.selectbox("Единица*", options=units_df['id'].tolist(),
+                    format_func=lambda x: f"{units_df[units_df['id']==x]['name'].values[0]} ({units_df[units_df['id']==x]['short_name'].values[0]})")
                 description = st.text_area("Описание")
                 min_stock = st.number_input("Минимальный остаток", min_value=0.0, value=0.0, step=1.0)
-                selling_price = st.number_input("Цена продажи ₽", min_value=0.0, value=0.0, step=10.0)
+                selling_price = st.number_input("Цена продажи (₽)", min_value=0.0, value=0.0, step=0.01)
                 
-                if st.form_submit_button("➕ Добавить"):
+                if st.form_submit_button("➕ Добавить", use_container_width=True):
                     if not name:
-                        st.error("⚠️ Укажите название!")
+                        st.error("Укажите название")
                     else:
-                        product_data = {
-                            'name': name,
-                            'category_id': category_id,
-                            'unit_id': unit_id,
-                            'description': description,
-                            'min_stock': min_stock,
-                            'selling_price': selling_price,
-                            'current_stock': 0,
-                            'avg_cost': 0
-                        }
+                        product_data = {'name': name, 'category_id': category_id, 'unit_id': unit_id,
+                                       'description': description, 'min_stock': min_stock,
+                                       'current_stock': 0, 'avg_cost': 0, 'selling_price': selling_price}
                         db.add_product(company_id, product_data)
-                        st.success("✅ Продукт добавлен!")
-                        time.sleep(1)
+                        st.success(f"✅ Продукт '{name}' добавлен!")
                         st.rerun()
     
     with tab2:
-        st.subheader("👥 Управление сотрудниками")
-        employees_df = db.get_employees(company_id)
-        
-        col1, col2 = st.columns([2, 1])
-        
+        col1, col2 = st.columns([3, 2])
         with col1:
-            st.markdown("**Список сотрудников:**")
+            employees_df = db.get_employees(company_id)
             if not employees_df.empty:
-                for _, emp in employees_df.iterrows():
-                    st.write(f"**{emp['name']}** — {emp['position']}")
-                    st.caption(f"Ставка: {emp['hourly_rate']:.2f} ₽/час")
+                for _, row in employees_df.iterrows():
+                    st.markdown(f"**{row['name']}** — {row['position']}")
+                    st.caption(f"Ставка: {row['hourly_rate']:.2f} ₽/час")
                     st.markdown("---")
             else:
-                st.info("📭 Нет сотрудников")
+                st.info("Сотрудники не добавлены")
         
         with col2:
-            st.markdown("**Добавить сотрудника:**")
             with st.form("add_employee_form"):
-                name = st.text_input("ФИО*")
+                emp_name = st.text_input("ФИО*")
                 position = st.text_input("Должность")
-                hourly_rate = st.number_input("Ставка ₽/час", min_value=0.0, value=0.0, step=50.0)
+                hourly_rate = st.number_input("Ставка (₽/час)", min_value=0.0, value=0.0, step=0.5)
                 
-                if st.form_submit_button("➕ Добавить"):
-                    if not name:
-                        st.error("⚠️ Укажите ФИО!")
+                if st.form_submit_button("➕ Добавить", use_container_width=True):
+                    if not emp_name:
+                        st.error("Укажите ФИО")
                     else:
-                        employee_data = {
-                            'name': name,
-                            'position': position,
-                            'hourly_rate': hourly_rate
-                        }
+                        employee_data = {'name': emp_name, 'position': position, 'hourly_rate': hourly_rate}
                         db.add_employee(company_id, employee_data)
-                        st.success("✅ Сотрудник добавлен!")
-                        time.sleep(1)
+                        st.success(f"✅ Сотрудник '{emp_name}' добавлен!")
                         st.rerun()
     
     with tab3:
-        st.subheader("📁 Справочник категорий")
-        categories = db.get_categories()
-        
+        categories_df = db.get_categories()
         st.markdown("**Текущие категории:**")
-        for _, cat in categories.iterrows():
-            st.write(f"**{cat['name']}** — {cat['description']}")
-        
-        st.info("ℹ️ Категории заполняются автоматически при инициализации базы данных")
+        for _, cat in categories_df.iterrows():
+            st.write(f"**{cat['name']}** — {cat['type']}")
 
 st.markdown("---")
-st.markdown("<div style='text-align: center; color: gray;'><p>🏭 Универсальный дашборд учета производства и склада | v2.0 с авторизацией</p></div>", unsafe_allow_html=True)
+st.markdown("<div style='text-align: center; color: gray;'><p>🏭 Дашборд v2.0 | Авторизация | PostgreSQL</p></div>", unsafe_allow_html=True)
