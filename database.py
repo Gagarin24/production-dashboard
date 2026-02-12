@@ -372,6 +372,8 @@ class ProductionDB:
     
     def get_production_operations(self, company_id, start_date=None, end_date=None):
         conn = self.get_connection()
+        cursor = conn.cursor()
+        
         query = '''
             SELECT 
                 po.id, 
@@ -381,12 +383,12 @@ class ProductionDB:
                 po.output_product_id, 
                 po.output_quantity, 
                 po.output_cost, 
-                CAST(po.production_date AS TEXT) as production_date,
+                po.production_date,
                 po.notes, 
                 po.created_date,
-                COALESCE(p.name, 'Неизвестно') as output_product_name, 
-                COALESCE(u.short_name, '') as output_unit, 
-                COALESCE(e.name, 'Не указан') as employee_name
+                p.name as output_product_name, 
+                u.short_name as output_unit, 
+                e.name as employee_name
             FROM production_operations po
             LEFT JOIN products p ON po.output_product_id = p.id
             LEFT JOIN units u ON p.unit_id = u.id
@@ -401,7 +403,11 @@ class ProductionDB:
             query += ' AND po.production_date <= %s'
             params.append(end_date)
         query += ' ORDER BY po.production_date DESC'
-        df = pd.read_sql_query(query, conn, params=tuple(params))
+        
+        cursor.execute(query, tuple(params))
+        columns = [desc[0] for desc in cursor.description]
+        rows = cursor.fetchall()
+        df = pd.DataFrame(rows, columns=columns)
         conn.close()
         return df
     
