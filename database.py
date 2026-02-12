@@ -195,7 +195,7 @@ class ProductionDB:
         conn.close()
         return result[0] if result else "Неизвестная компания"
     
-    # ===== ОСТАЛЬНЫЕ МЕТОДЫ =====
+    # ===== СПРАВОЧНИКИ =====
     def get_units(self):
         conn = self.get_connection()
         df = pd.read_sql_query("SELECT * FROM units ORDER BY name", conn)
@@ -208,6 +208,7 @@ class ProductionDB:
         conn.close()
         return df
     
+    # ===== ПРОДУКТЫ =====
     def add_product(self, company_id, product_data):
         conn = self.get_connection()
         cursor = conn.cursor()
@@ -238,7 +239,14 @@ class ProductionDB:
     
     def get_product_by_id(self, product_id):
         conn = self.get_connection()
-        df = pd.read_sql_query("SELECT * FROM products WHERE id = %s", conn, params=(product_id,))
+        query = '''
+            SELECT p.*, c.name as category_name, u.short_name as unit_name
+            FROM products p
+            LEFT JOIN categories c ON p.category_id = c.id
+            LEFT JOIN units u ON p.unit_id = u.id
+            WHERE p.id = %s
+        '''
+        df = pd.read_sql_query(query, conn, params=(product_id,))
         conn.close()
         return df.iloc[0] if not df.empty else None
     
@@ -253,6 +261,7 @@ class ProductionDB:
         conn.commit()
         conn.close()
     
+    # ===== СОТРУДНИКИ =====
     def add_employee(self, company_id, employee_data):
         conn = self.get_connection()
         cursor = conn.cursor()
@@ -272,6 +281,7 @@ class ProductionDB:
         conn.close()
         return df
     
+    # ===== ДВИЖЕНИЕ ТОВАРОВ =====
     def add_stock_movement(self, company_id, movement_data):
         conn = self.get_connection()
         cursor = conn.cursor()
@@ -325,6 +335,7 @@ class ProductionDB:
         conn.close()
         return df
     
+    # ===== ПРОИЗВОДСТВО =====
     def add_production_operation(self, company_id, production_data, materials_used):
         conn = self.get_connection()
         cursor = conn.cursor()
@@ -397,31 +408,66 @@ class ProductionDB:
     def delete_production_operation(self, production_id):
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM production_operations WHERE id = %s", (production_id,))
+        
+        # Получаем данные операции
+        cursor.execute("""
+            SELECT id, company_id, operation_name, employee_id, output_product_id, 
+                   output_quantity, output_cost, production_date, notes
+            FROM production_operations 
+            WHERE id = %s
+        """, (production_id,))
         operation = cursor.fetchone()
+        
         if not operation:
             conn.close()
             return {"success": False, "message": "Операция не найдена"}
-        cursor.execute("SELECT * FROM production_materials WHERE production_id = %s", (production_id,))
+        
+        # Распаковываем данные
+        op_id, company_id, op_name, employee_id, output_product_id, output_quantity, output_cost, prod_date, notes = operation
+        
+        # Получаем материалы
+        cursor.execute("""
+            SELECT id, production_id, product_id, quantity_used, cost
+            FROM production_materials 
+            WHERE production_id = %s
+        """, (production_id,))
         materials = cursor.fetchall()
+        
+        # Возвращаем материалы на склад
         for material in materials:
-            _, _, product_id, quantity_used, _ = material
+            mat_id, prod_id, product_id, quantity_used, cost = material
             cursor.execute("SELECT current_stock FROM products WHERE id = %s", (product_id,))
-            current_stock = cursor.fetchone()[0]
-            new_stock = current_stock + quantity_used
-            cursor.execute("UPDATE products SET current_stock = %s WHERE id = %s", (new_stock, product_id))
-        output_product_id = operation[3]
-        output_quantity = operation[5]
+            result = cursor.fetchone()
+            if result:
+                current_stock = result[0]
+                new_stock = current_stock + quantity_used
+                cursor.execute("UPDATE products SET current_stock = %s WHERE id = %s", (new_stock, product_id))
+        
+        # Списываем готовую продукцию
         cursor.execute("SELECT current_stock FROM products WHERE id = %s", (output_product_id,))
-        current_output = cursor.fetchone()[0]
-        new_output = max(0, current_output - output_quantity)
-        cursor.execute("UPDATE products SET current_stock = %s WHERE id = %s", (new_output, output_product_id))
+        result = cursor.fetchone()
+        if result:
+            current_output = result[0]
+            new_output = max(0, current_output - output_quantity)
+            cursor.execute("UPDATE products SET current_stock = %s WHERE id = %s", (new_output, output_product_id))
+            actual_removed = min(current_output, output_quantity)
+        else:
+            actual_removed = 0
+        
+        # Удаляем записи
         cursor.execute("DELETE FROM production_materials WHERE production_id = %s", (production_id,))
         cursor.execute("DELETE FROM production_operations WHERE id = %s", (production_id,))
+        
         conn.commit()
         conn.close()
-        return {"success": True, "materials_returned": len(materials), "output_removed": min(current_output, output_quantity)}
+        
+        return {
+            "success": True, 
+            "materials_returned": len(materials), 
+            "output_removed": actual_removed
+        }
     
+    # ===== РАСХОДЫ =====
     def add_expense(self, company_id, expense_data):
         conn = self.get_connection()
         cursor = conn.cursor()
