@@ -169,6 +169,9 @@ class ProductionDB:
         except psycopg2.errors.UniqueViolation:
             conn.close()
             return {"success": False, "message": "Логин уже занят"}
+        except Exception as e:
+            conn.close()
+            return {"success": False, "message": str(e)}
     
     def login_user(self, login, password):
         conn = self.get_connection()
@@ -192,7 +195,7 @@ class ProductionDB:
         conn.close()
         return result[0] if result else "Неизвестная компания"
     
-    # ===== ОСТАЛЬНЫЕ МЕТОДЫ С company_id =====
+    # ===== ОСТАЛЬНЫЕ МЕТОДЫ =====
     def get_units(self):
         conn = self.get_connection()
         df = pd.read_sql_query("SELECT * FROM units ORDER BY name", conn)
@@ -359,7 +362,20 @@ class ProductionDB:
     def get_production_operations(self, company_id, start_date=None, end_date=None):
         conn = self.get_connection()
         query = '''
-            SELECT po.*, p.name as output_product_name, u.short_name as output_unit, e.name as employee_name
+            SELECT 
+                po.id, 
+                po.company_id, 
+                po.operation_name, 
+                po.employee_id, 
+                po.output_product_id, 
+                po.output_quantity, 
+                po.output_cost, 
+                CAST(po.production_date AS TEXT) as production_date,
+                po.notes, 
+                po.created_date,
+                COALESCE(p.name, 'Неизвестно') as output_product_name, 
+                COALESCE(u.short_name, '') as output_unit, 
+                COALESCE(e.name, 'Не указан') as employee_name
             FROM production_operations po
             LEFT JOIN products p ON po.output_product_id = p.id
             LEFT JOIN units u ON p.unit_id = u.id
@@ -433,4 +449,3 @@ class ProductionDB:
         df = pd.read_sql_query(query, conn, params=tuple(params))
         conn.close()
         return df
-
